@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <style>
+        body {
+            background-color: #222;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Promise的一个简单实现</h2>
+    <script>
+        /**
+         * 异步执行函数
+         * 将回调函数callback置入微任务队列
+         */
+        function runAsynctask(callback) {
+            if (typeof queueMicrotask === "function") {
+                queueMicrotask(callback)
+            } else if (typeof MutationObserver === "function") {
+                const obs = new MutationObserver(callback);
+                const divNode = document.createElement("div")
+                obs.observe(divNode, { childList: true })
+                divNode.innerText = "Promise"
+            } else {
+                setTimeout(callback, 0)
+            }
+        }
+
+        // #region runAsynctask测试用例
+
+        // // queueMicrotask - 异步任务全局函数
+        // console.log("queueMicrotask - 1")
+        // queueMicrotask(() => {
+        //     console.log("queueMicrotask")
+        // })
+        // console.log("queueMicrotask - 2")
+
+        // // MutationObserver - 创建异步任务
+        // console.log("MutationObserver - 1")
+        // const obs = new MutationObserver(() => {
+        //     console.log("MutationObserver")
+        // })
+        // const divNode = document.createElement("div")
+        // obs.observe(divNode, { childList: true })
+        // divNode.innerText = "Jack Lucy"
+        // console.log("MutationObserver - 2")
+
+        // #endregion
+
+
+        /**
+         * 实现Promise
+         * 构造函数
+         * 1. 定义类
+         * 2. 添加构造函数
+         * 3. 定义resolve/reject
+         * 4. 执行回调函数
+         * 5. 状态不可逆
+         */
+        const PENDING = "pending";
+        const FULFILLED = "fulfilled";
+        const REJECTED = "rejected";
+        class MyPromise {
+            state = PENDING; // 状态
+            result = undefined; // 结果
+            // 暂存回调函数，私有属性
+            #handlers = [] // [{onFulfilled,onRejected},...]
+
+            constructor(func) {
+                // pending => fulfilled
+                const resolve = (result) => {
+                    if (this.state === PENDING) {
+                        this.state = FULFILLED;
+                        this.result = result;
+
+                        this.#handlers.forEach(({ onFulfilled }) => {
+                            onFulfilled(this.result)
+                        })
+                    }
+                }
+
+                // pending => rejected
+                const reject = (result) => {
+                    if (this.state === PENDING) {
+                        this.state = REJECTED;
+                        this.result = result;
+
+                        this.#handlers.forEach(({ onRejected }) => {
+                            onRejected(this.result)
+                        })
+                    }
+                }
+                try {
+                    func(resolve, reject);
+                } catch (error) {
+                    reject(error)
+                }
+            }
+
+            #resolvePromise(p2, x, resolve, reject) {
+                // 处理重复引用
+                if (x === p2) {
+                    throw new TypeError("Chaining cycle detected for promise #<Promise>")
+                }
+                // 处理返回MyPromise的情形
+                if (x instanceof MyPromise) {
+                    x.then(res => {
+                        resolve(res)
+                    }, err => {
+                        reject(err)
+                    })
+                } else {
+                    resolve(x);
+                }
+            }
+
+            /**
+             * 添加then示例方法
+             * 判断参数成功回调和失败回调，非回调函数则设为默认
+             * 执行失败/成功回调
+             * 
+             * 返回一个新的Promise支持链式调用
+             * 利用runAsynctask支持异步调用
+             */
+            then(onFulfilled, onRejected) {
+                onFulfilled = typeof onFulfilled === "function" ? onFulfilled : x => x
+                onRejected = typeof onRejected === "function" ? onRejected : x => { throw x }
+
+                const p2 = new MyPromise((resolve, reject) => {
+                    if (this.state === FULFILLED) {
+                        runAsynctask(() => {
+                            try {
+                                const x = onFulfilled(this.result);
+                                this.#resolvePromise(p2, x, resolve, reject);
+                            } catch (error) {
+                                reject(error);
+                            }
+                        })
+                    } else if (this.state === REJECTED) {
+                        runAsynctask(() => {
+                            try {
+                                const x = onRejected(this.result);
+                                this.#resolvePromise(p2, x, resolve, reject);
+                            } catch (error) {
+                                reject(error);
+                            }
+                        })
+                    } else if (this.state === PENDING) {
+                        // 暂存回调函数支持异步
+                        this.#handlers.push({
+                            onFulfilled: () => {
+                                runAsynctask(() => {
+                                    try {
+                                        const x = onFulfilled(this.result);
+                                        this.#resolvePromise(p2, x, resolve, reject);
+                                    } catch (error) {
+                                        reject(error);
+                                    }
+                                })
+                            },
+                            onRejected: () => {
+                                runAsynctask(() => {
+                                    try {
+                                        const x = onRejected(this.result);
+                                        this.#resolvePromise(p2, x, resolve, reject);
+                                    } catch (error) {
+                                        reject(error);
+                                    }
+                                })
+                            }
+                        })
+                    }
+                })
+                return p2;
+            }
+
+
+            catch(onRejected) {
+                return this.then(undefined, onRejected);
+            }
+
+            finally(onFinally) {
+                return this.then(onFinally, onFinally);
+            }
+
+            /**
+             * 判断传入值
+             * Promise则直接返回
+             * 其它情形转为Promise(onFulfilled状态)并返回 
+             */
+            static resolve(value) {
+                if (value instanceof MyPromise) {
+                    return value;
+                }
+
+                return new MyPromise((resolve, reject) => {
+                    resolve(value);
+                })
+            }
+
+            /**
+             * 返回reject状态的Promise对象
+             */
+            static reject(value) {
+                return new MyPromise((undefined, reject) => {
+                    reject(value);
+                })
+            }
+            /**
+             * 返回Promise
+             * 判断传入参数是否为数组，否则抛出TypeError
+             * 等待第一个Promise敲定，成功或失败
+             */
+            static race(promises) {
+                return new MyPromise((resolve, reject) => {
+                    if (!Array.isArray(promises)) {
+                        reject(new TypeError("Argument is not iterable"))
+                    }
+                    promises.forEach(p => {
+                        MyPromise.resolve(p).then(
+                            res => { resolve(res) },
+                            err => { reject(err) })
+                    })
+                })
+            }
+
+            /**
+             * 入参为数组，全部兑现则按在数组中的顺序返回结果数组，否则有失败则返回第一个失败的原因
+             * 返回Promise
+             * 判断入参是否为数组
+             * 空数组直接兑现
+             * 处理全部兑现
+             * 处理第一个拒绝
+             */
+            static all(promises) {
+                return new MyPromise((resolve, reject) => {
+                    if (!Array.isArray(promises)) {
+                        return reject(new TypeError("Argument is not iterable"))
+                    }
+                    promises.length === 0 && resolve(promises)
+
+                    const results = []
+                    let count = 0;
+                    promises.forEach((p, index) => {
+                        MyPromise.resolve(p).then(
+                            res => {
+                                results[index] = res;
+                                count++;
+                                count === promises.length && resolve(results)
+                            },
+                            err => {
+                                reject(err)
+                            }
+                        )
+                    })
+                })
+            }
+
+            /**
+             * 传入的Promise都变为已敲定时可获取兑现的结果
+             * [{status:"fulfilled",value:1},{status:"rejected",reason:"error"},...]
+             * 结果数组的顺序和传入的Promise的顺序一致
+             * 空数组直接兑现
+             * 入参非数组则报错TypeError
+             */
+            static allSettled(promises) {
+                return new MyPromise((resolve, reject) => {
+                    if (!Array.isArray(promises)) {
+                        return reject(new TypeError("Argument is not iterable"))
+                    }
+
+                    promises.length === 0 && resolve(promises)
+
+                    const results = []
+                    let count = 0;
+                    promises.forEach((p, index) => {
+                        MyPromise.resolve(p).then(
+                            res => {
+                                results[index] = { "status": FULFILLED, "value": res }
+                                count++;
+                                count === promises.length && resolve(results)
+                            },
+                            err => {
+                                results[index] = { "status": REJECTED, "reason": err }
+                                count++;
+                                count === promises.length && resolve(results)
+                            })
+                    })
+                })
+            }
+
+            /**
+             * 返回第一个成功的结果
+             * 所有都失败则返回各个失败的原因
+             * 空数组则直接拒绝
+             */
+            static any(promises) {
+                return new MyPromise((resolve, reject) => {
+                    if (!Array.isArray(promises)) {
+                        return reject(new TypeError("Argument is not iterable"))
+                    }
+
+                    promises.length === 0 && reject(new AggregateError(promises, "all promises were rejected"))
+
+                    const errors = []
+                    let count = 0;
+                    promises.forEach((p, index) => {
+                        MyPromise.resolve(p).then(
+                            res => {
+                                resolve(res)
+                            },
+                            err => {
+                                errors[index] = err;
+                                count++;
+                                count === promises.length && reject(new AggregateError(errors, "all promises were rejected"))
+                            }
+                        )
+                    })
+                })
+            }
+        }
+
+
+
+        // 测试用例
+        const p = new MyPromise((resolve, reject) => {
+            resolve("new resolve")
+            // reject("new reject")
+            // throw "throw error"
+        })
+
+        // #region 核心功能
+
+        // p.then(res => {
+        //     console.log("resolve : ", res)
+        // }, err => {
+        //     console.log("reject : ", err)
+        // })
+        // 默认处理逻辑
+        // p.then(res => {
+        //     console.log("resolve : ", res)
+        // })
+
+        // console.log("before then")
+
+        // p.then(res => {
+        //     console.log("then1 - resolve : ", res)
+        // }, err => {
+        //     console.log("then1 - reject : ", err)
+        // })
+
+        // p.then(res => {
+        //     console.log("then2 - resolve : ", res)
+        // }, err => {
+        //     console.log("then2 - reject : ", err)
+        // })
+
+        // console.log("after then")
+
+        // #endregion
+
+        // #region 支持链式编程
+
+        // p.then(res => {
+        //     console.log("then1 - resolve : ", res)
+        //     return new MyPromise((resolve, reject) => {
+        //         resolve(2)
+        //     })
+        // }, err => {
+        //     console.log("then1 - reject : ", err)
+        // }).then(res => {
+        //     console.log("then2 - resolve : ", res)
+        // }, err => {
+        //     console.log("then2 - reject : ", err)
+        // })
+
+        // #endregion
+
+        // #region 重复引用
+        // const p2 = p.then(res => {
+        //     // return p2;
+        //     // return 2;
+        //     // throw "123";
+        //     return new MyPromise((resolve, reject) => {
+        //         setTimeout(()=>{
+        //             resolve("Zhao")
+        //         },1000)
+        //     })
+        // })
+        // p2.then(res => {
+        //     console.log("p2 then res = ", res)
+        // }, err => {
+        //     console.log("p2 then err = ", err)
+        // })
+
+        // #endregion
+
+        // #region catch方法
+
+        // p.then(res => {
+        //     console.log("res = ", res);
+        // }).catch(err => {
+        //     console.log("err = ", err)
+        // })
+
+        // #endregion
+
+        // #region finally方法
+
+        // p.then(res => {
+        //     console.log("res = ", res)
+        // }).catch(err => {
+        //     console.log("err = ", err)
+        // }).finally(() => {
+        //     console.log("finally executed!")
+        // })
+
+        // #endregion
+
+        // #region resolve静态方法
+
+        // MyPromise.resolve(new MyPromise((resolve, reject) => {
+        //     resolve("success")
+        //     // reject("error")
+        //     // throw "throw error"
+        // })).then(res => {
+        //     console.log("res = ", res);
+        // }, err => {
+        //     console.log("err = ", err)
+        // })
+
+        // MyPromise.resolve("Jack").then(res => {
+        //     console.log("Jack - res = ", res)
+        // })
+
+        // #endregion
+
+        // #region reject静态方法
+
+        // MyPromise.reject(new MyPromise((resolve, reject) => {
+        //     resolve("success")
+        //     // reject("error")
+        //     // throw "throw error"
+        // })).then(res => {
+        //     console.log("res = ", res);
+        // }, err => {
+        //     console.log("err = ", err)
+        // })
+
+        // MyPromise.reject("Jack").then(undefined, err => {
+        //     console.log("Jack - err = ", err)
+        // })
+
+        // #endregion
+
+        // #region race静态方法
+        // const p1 = new MyPromise((resolve, reject) => {
+        //     setTimeout(() => {
+        //         resolve(1)
+        //     }, 2000)
+        // })
+        // const p2 = new MyPromise((resolve, reject) => {
+        //     setTimeout(() => {
+        //         reject(2)
+        //     }, 1000)
+        // })
+        // MyPromise.race([p1, p2]).then(res => {
+        //     console.log("res = ", res)
+        // }, err => {
+        //     console.log("err = ", err)
+        // })
+        // #endregion
+
+        // #region all静态方法
+        // const p1 = new MyPromise((resolve, reject) => {
+        //     setTimeout(() => {
+        //         resolve(1)
+        //     }, 2000)
+        // })
+        // const p2 = new MyPromise((resolve, reject) => {
+        //     setTimeout(() => {
+        //         resolve(2)
+        //     }, 1000)
+        // })
+        // const p3 = 3;
+        // MyPromise.all([p1, p2, p3]).then(res => {
+        //     console.log("res = ", res)
+        // }, err => {
+        //     console.log("err = ", err)
+        // })
+        // #endregion
+
+        // #region allSettled静态方法
+        // const p1 = new MyPromise((resolve, reject) => {
+        //     setTimeout(() => {
+        //         resolve(1)
+        //     }, 2000)
+        // })
+        // const p2 = new MyPromise((resolve, reject) => {
+        //     setTimeout(() => {
+        //         reject(2)
+        //     }, 1000)
+        // })
+        // const p3 = 3;
+        // MyPromise.allSettled([p1, p2, p3]).then(res => {
+        //     console.log("res = ", res)
+        // }, err => {
+        //     console.log("err = ", err)
+        // })
+        // #endregion
+
+        // #region any静态方法
+        const p1 = new MyPromise((resolve, reject) => {
+            setTimeout(() => {
+                reject(1)
+            }, 2000)
+        })
+        const p2 = new MyPromise((resolve, reject) => {
+            setTimeout(() => {
+                reject(2)
+            }, 1000)
+        })
+        const p3 = MyPromise.reject(3);
+        MyPromise.any([p1, p2, p3]).then(res => {
+            console.log("res = ", res)
+        }, err => {
+            // console.log("err = ", err)
+            console.dir(err)
+        })
+        // #endregion
+
+    </script>
+</body>
+
+</html>
